@@ -1,6 +1,7 @@
 /**
  * SOAP client for Garoon Bulletin API.
- * Used as fallback when the REST API returns 400 (e.g., on older on-premise instances).
+ * Used as fallback when the REST API returns 400/404/405
+ * (e.g., on older on-premise instances).
  *
  * Endpoint pattern (on-premise):
  *   https://{host}/{install_path}/cbpapi/bulletin/api
@@ -8,22 +9,24 @@
  * Verified working on Garoon 5.15.2 (on-premise).
  */
 
-const rawUrl = process.env.GAROON_BASE_URL || "";
-const GAROON_BASE_URL = rawUrl && /^https?:\/\//i.test(rawUrl) ? rawUrl : "";
+import { XMLParser } from "fast-xml-parser";
+import {
+  GAROON_BASE_URL,
+  GAROON_USERNAME,
+  GAROON_PASSWORD,
+  API_CREDENTIAL,
+  BASIC_AUTH_HEADER,
+} from "./config.js";
 
 // SOAP endpoint: {BASE_URL}/cbpapi/bulletin/api (no .csp extension)
 const SOAP_BULLETIN_ENDPOINT = `${GAROON_BASE_URL}/cbpapi/bulletin/api`;
 
-// X-Cybozu-Authorization: base64(username:password)
-const API_CREDENTIAL = Buffer.from(
-  `${process.env.GAROON_USERNAME}:${process.env.GAROON_PASSWORD}`,
-).toString("base64");
-
-// Optional Basic Auth
-const GAROON_BASIC_AUTH_USERNAME =
-  process.env.GAROON_BASIC_AUTH_USERNAME || "";
-const GAROON_BASIC_AUTH_PASSWORD =
-  process.env.GAROON_BASIC_AUTH_PASSWORD || "";
+const xmlParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: "@_",
+  textNodeName: "#text",
+  parseAttributeValue: false,
+});
 
 export interface BulletinTopicSoap {
   id: string;
@@ -31,6 +34,7 @@ export interface BulletinTopicSoap {
   body: string;
   creatorId: string;
   creatorName: string;
+  creatorLoginName: string;
   createdAt: string;
   updatedAt: string;
   categoryId: string;
@@ -38,28 +42,25 @@ export interface BulletinTopicSoap {
 
 /**
  * Build the SOAP envelope for BulletinGetTopicByIds.
- *
- * Parameter format (from Garoon SOAP API docs):
- *   <topics xmlns="" topic_id="ID" is_draft="false"></topics>
+ * Expires is set to now + 10 minutes (dynamic).
  */
 function buildSoapEnvelope(topicId: string): string {
-  const username = process.env.GAROON_USERNAME ?? "";
-  const password = process.env.GAROON_PASSWORD ?? "";
-  const now = new Date().toISOString();
+  const now = new Date();
+  const expires = new Date(now.getTime() + 10 * 60 * 1000);
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope">
   <soap:Header>
     <Action>BulletinGetTopicByIds</Action>
     <Timestamp>
-      <Created>${now}</Created>
-      <Expires>2037-08-12T14:45:00Z</Expires>
+      <Created>${now.toISOString()}</Created>
+      <Expires>${expires.toISOString()}</Expires>
     </Timestamp>
     <Locale>jp</Locale>
     <Security>
       <UsernameToken>
-        <Username>${escapeXml(username)}</Username>
-        <Password>${escapeXml(password)}</Password>
+        <Username>${escapeXml(GAROON_USERNAME)}</Username>
+        <Password>${escapeXml(GAROON_PASSWORD)}</Password>
       </UsernameToken>
     </Security>
   </soap:Header>
@@ -83,29 +84,19 @@ function escapeXml(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
-/** Unescape XML entities in attribute values / text content. */
-function unescapeXml(value: string): string {
-  return value
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&#10;/g, "\n")
-    .replace(/&#xA;/g, "\n");
-}
-
 /**
- * Extract an attribute value from the first occurrence of a tag in the XML.
- * Handles namespace prefixes (e.g., th:creator).
+ * Navigate into a parsed XML object, handling namespace prefixes.
+ * Tries both `ns:tagName` and plain `tagName`.
  */
-function extractAttr(xml: string, tagName: string, attr: string): string {
-  const re = new RegExp(
-    `<(?:[^:>]+:)?${tagName}[^>]*?\\s${attr}="([^"]*)"`,
-    "i",
-  );
-  const match = re.exec(xml);
-  return match ? unescapeXml(match[1]) : "";
+function findTag(obj: Record<string, unknown>, tagName: string): unknown {
+  if (!obj || typeof obj !== "object") return undefined;
+  // Direct match
+  if (tagName in obj) return obj[tagName];
+  // Namespace-prefixed match (e.g., th:content)
+  for (const key of Object.keys(obj)) {
+    if (key.endsWith(`:${tagName}`)) return obj[key];
+  }
+  return undefined;
 }
 
 /**
@@ -114,11 +105,11 @@ function extractAttr(xml: string, tagName: string, attr: string): string {
  * Response format (Garoon 5.15.2):
  * ```xml
  * <topic id="29151" subject="..." category_id="3" ...>
- *   <th:content body="本文テキスト">
+ *   <th:content body="...">
  *     <th:file id="..." name="..." size="..." mime_type="..." />
  *   </th:content>
- *   <th:creator user_id="29" name="金子　直樹" date="2026-03-07T08:02:05Z" />
- *   <th:modifier user_id="29" name="金子　直樹" date="2026-03-07T08:02:05Z" />
+ *   <th:creator user_id="29" name="..." login_name="..." date="..." />
+ *   <th:modifier user_id="29" name="..." login_name="..." date="..." />
  * </topic>
  * ```
  */
@@ -132,11 +123,8 @@ export async function getBulletinTopicBySoap(
     "X-Cybozu-Authorization": API_CREDENTIAL,
   };
 
-  if (GAROON_BASIC_AUTH_USERNAME && GAROON_BASIC_AUTH_PASSWORD) {
-    const basicCredential = Buffer.from(
-      `${GAROON_BASIC_AUTH_USERNAME}:${GAROON_BASIC_AUTH_PASSWORD}`,
-    ).toString("base64");
-    headers["Authorization"] = `Basic ${basicCredential}`;
+  if (BASIC_AUTH_HEADER) {
+    headers.Authorization = BASIC_AUTH_HEADER;
   }
 
   const response = await fetch(SOAP_BULLETIN_ENDPOINT, {
@@ -153,43 +141,78 @@ export async function getBulletinTopicBySoap(
   }
 
   const xml = await response.text();
+  const parsed = xmlParser.parse(xml);
+
+  // Navigate: soap:Envelope > soap:Body > BulletinGetTopicByIdsResponse > returns > topic
+  const envelope_ = findTag(
+    parsed as Record<string, unknown>,
+    "Envelope",
+  ) as Record<string, unknown> | undefined;
+  const body = findTag(envelope_ ?? {}, "Body") as
+    | Record<string, unknown>
+    | undefined;
 
   // Check for SOAP Fault
-  if (xml.includes("<soap:Fault>")) {
-    const cause =
-      xml.match(/<cause>([\s\S]*?)<\/cause>/)?.[1] ?? "unknown error";
-    throw new Error(`Garoon SOAP fault: ${unescapeXml(cause)}`);
+  const fault = findTag(body ?? {}, "Fault") as
+    | Record<string, unknown>
+    | undefined;
+  if (fault) {
+    const reason = findTag(fault, "Reason") as
+      | Record<string, unknown>
+      | undefined;
+    const text_ = findTag(reason ?? {}, "Text");
+    throw new Error(`Garoon SOAP fault: ${String(text_ ?? "unknown error")}`);
   }
 
-  // Extract attributes from <topic> tag
-  const id = extractAttr(xml, "topic", "id") || topicId;
-  const subject = extractAttr(xml, "topic", "subject");
-  const categoryId = extractAttr(xml, "topic", "category_id");
+  const responseTag = findTag(
+    body ?? {},
+    "BulletinGetTopicByIdsResponse",
+  ) as Record<string, unknown> | undefined;
+  const returns = findTag(responseTag ?? {}, "returns") as
+    | Record<string, unknown>
+    | undefined;
+  const topic = findTag(returns ?? {}, "topic") as
+    | Record<string, unknown>
+    | undefined;
 
-  if (!subject && !xml.includes("<topic")) {
+  if (!topic) {
     throw new Error(
       `SOAP response did not contain a <topic> element. Raw: ${xml.slice(0, 500)}`,
     );
   }
 
-  // Body is an attribute on <th:content body="...">
-  const body = extractAttr(xml, "content", "body");
+  const id = String(topic["@_id"] ?? topicId);
+  const subject = String(topic["@_subject"] ?? "");
+  const categoryId = String(topic["@_category_id"] ?? "");
 
-  // Creator: <th:creator user_id="..." name="..." date="..." />
-  const creatorId = extractAttr(xml, "creator", "user_id");
-  const creatorName = extractAttr(xml, "creator", "name");
-  const createdAt = extractAttr(xml, "creator", "date");
+  // Body: <th:content body="...">
+  const content = findTag(topic, "content") as
+    | Record<string, unknown>
+    | undefined;
+  const bodyText = String(content?.["@_body"] ?? "");
+
+  // Creator: <th:creator user_id="..." name="..." login_name="..." date="..." />
+  const creator = findTag(topic, "creator") as
+    | Record<string, unknown>
+    | undefined;
+  const creatorId = String(creator?.["@_user_id"] ?? "");
+  const creatorName = String(creator?.["@_name"] ?? "");
+  const creatorLoginName = String(creator?.["@_login_name"] ?? creatorId);
+  const createdAt = String(creator?.["@_date"] ?? "");
 
   // Modifier: <th:modifier user_id="..." name="..." date="..." />
-  const updatedAt =
-    extractAttr(xml, "modifier", "date") || createdAt;
+  const modifier = findTag(topic, "modifier") as
+    | Record<string, unknown>
+    | undefined;
+  const updatedAt = String(modifier?.["@_date"] ?? createdAt);
 
   return {
     id,
     subject,
-    body,
+    body: bodyText,
     creatorId,
     creatorName,
+    creatorLoginName,
     createdAt,
     updatedAt,
     categoryId,

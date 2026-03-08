@@ -1,6 +1,6 @@
 {
   "name": "@garoon/mcp-server",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "The official MCP Server for Garoon",
   "keywords": [
     "garoon",
@@ -54,6 +54,7 @@
   "dependencies": {
     "@js-temporal/polyfill": "^0.5.1",
     "@modelcontextprotocol/sdk": "^1.19.1",
+    "fast-xml-parser": "^5.4.2",
     "undici": "^7.16.0",
     "zod": "^3.25.76"
   },

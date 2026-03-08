@@ -1,32 +1,18 @@
-import { VERSION, EXECUTION_TYPE } from "./build-constants.js";
-
-const rawUrl = process.env.GAROON_BASE_URL || "";
-const GAROON_BASE_URL = rawUrl && /^https?:\/\//i.test(rawUrl) ? rawUrl : "";
-
-const API_CREDENTIAL = Buffer.from(
-  `${process.env.GAROON_USERNAME}:${process.env.GAROON_PASSWORD}`,
-).toString("base64");
-
-const USER_AGENT = `garoon-mcp-server/${VERSION} (${EXECUTION_TYPE})`;
+import {
+  GAROON_BASE_URL,
+  API_CREDENTIAL,
+  USER_AGENT,
+  BASIC_AUTH_HEADER,
+} from "./config.js";
 
 // Base headers for Garoon API
-const BASE_HEADERS: {
-  "X-Cybozu-Authorization": string;
-  "User-Agent": string;
-  Authorization?: string;
-} = {
+const BASE_HEADERS: Record<string, string> = {
   "X-Cybozu-Authorization": API_CREDENTIAL,
   "User-Agent": USER_AGENT,
 };
 
-// Basic Authentication for Garoon if credentials are provided
-const GAROON_BASIC_AUTH_USERNAME = process.env.GAROON_BASIC_AUTH_USERNAME || "";
-const GAROON_BASIC_AUTH_PASSWORD = process.env.GAROON_BASIC_AUTH_PASSWORD || "";
-if (GAROON_BASIC_AUTH_USERNAME && GAROON_BASIC_AUTH_PASSWORD) {
-  const BASIC_AUTH_CREDENTIAL = Buffer.from(
-    `${GAROON_BASIC_AUTH_USERNAME}:${GAROON_BASIC_AUTH_PASSWORD}`,
-  ).toString("base64");
-  BASE_HEADERS.Authorization = `Basic ${BASIC_AUTH_CREDENTIAL}`;
+if (BASIC_AUTH_HEADER) {
+  BASE_HEADERS.Authorization = BASIC_AUTH_HEADER;
 }
 
 export class HttpErrorResponse extends Error {

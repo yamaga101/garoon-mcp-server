@@ -8,6 +8,9 @@ import {
   ServerRequest,
 } from "@modelcontextprotocol/sdk/types.js";
 
+/** HTTP status codes that trigger SOAP fallback (REST API unsupported). */
+const SOAP_FALLBACK_STATUSES = [400, 404, 405];
+
 export const getBulletinTopicDetailHandler = async (
   input: {
     topicId: string;
@@ -25,9 +28,12 @@ export const getBulletinTopicDetailHandler = async (
       `/api/v1/bulletin/topics/${topicId}`,
     );
   } catch (err) {
-    // Fall back to SOAP when the REST endpoint returns 400
+    // Fall back to SOAP when the REST endpoint is unsupported
     // (common on older Garoon on-premise instances)
-    if (err instanceof HttpErrorResponse && err.status === 400) {
+    if (
+      err instanceof HttpErrorResponse &&
+      SOAP_FALLBACK_STATUSES.includes(err.status)
+    ) {
       const soapTopic = await getBulletinTopicBySoap(topicId);
       data = {
         id: soapTopic.id,
@@ -35,7 +41,7 @@ export const getBulletinTopicDetailHandler = async (
         body: soapTopic.body,
         creator: {
           id: soapTopic.creatorId,
-          code: soapTopic.creatorId,
+          code: soapTopic.creatorLoginName,
           name: soapTopic.creatorName,
         },
         createdAt: soapTopic.createdAt,
