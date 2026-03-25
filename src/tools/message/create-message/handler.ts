@@ -1,4 +1,6 @@
+import { z } from "zod";
 import { soapRequest } from "../../../client.js";
+import { outputSchema } from "./output-schema.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import {
   ServerNotification,
@@ -64,22 +66,21 @@ export const createMessageHandler = async (
   const threadId = parseAttr(responseXml, "thread", "id");
   const threadSubject = parseAttr(responseXml, "thread", "subject");
 
-  const result = {
-    id: threadId,
-    subject: threadSubject,
-    body: body,
-    raw: responseXml,
+  const output = {
+    result: {
+      id: threadId,
+      subject: threadSubject,
+      status: "sent",
+    },
   };
+  const validatedOutput = z.object(outputSchema).parse(output);
 
   return {
+    structuredContent: validatedOutput,
     content: [
       {
         type: "text" as const,
-        text: JSON.stringify(
-          { id: result.id, subject: result.subject, status: "sent" },
-          null,
-          2,
-        ),
+        text: JSON.stringify(validatedOutput, null, 2),
       },
     ],
   };
